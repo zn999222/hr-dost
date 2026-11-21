@@ -56,7 +56,7 @@ function AuthScreen() {
   return (
     <div className="auth-wrap">
       <div className="auth-hero">
-        <div className="logo">HD</div>
+        <img className="logo-img" src="/hr-dost-icon.png" alt="HR Dost logo" />
         <h1>HR Dost</h1>
         <p className="tagline">Apne employees, ek jagah. Sawal poochho, jawab pao.</p>
         <ul className="hero-points">
@@ -339,7 +339,7 @@ function App() {
   async function handleLogout() { await supabase.auth.signOut() }
 
   if (!authReady) {
-    return <div className="loading-screen"><div className="logo">HD</div><p>Loading HR Dost…</p></div>
+    return <div className="loading-screen"><img className="logo-img" src="/hr-dost-icon.png" alt="HR Dost logo" /><p>Loading HR Dost…</p></div>
   }
   if (!user) return <AuthScreen />
 
@@ -349,7 +349,7 @@ function App() {
     return (
       <div className="app">
         <header className="topbar">
-          <div className="brand"><span className="logo small">HD</span><span className="brand-name">HR Dost</span></div>
+          <div className="brand"><img className="logo-img small" src="/hr-dost-icon.png" alt="HR Dost logo" /><span className="brand-name">HR Dost</span></div>
           <div className="user-box"><span className="user-email">{displayName} · {user.email}</span><button type="button" className="ghost" onClick={handleLogout}>Log out</button></div>
         </header>
         <main className="setup-wrap">
@@ -374,7 +374,7 @@ function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand"><span className="logo small">HD</span><span className="brand-name">HR Dost</span><span className="company-chip">{company.name}</span></div>
+        <div className="brand"><img className="logo-img small" src="/hr-dost-icon.png" alt="HR Dost logo" /><span className="brand-name">HR Dost</span><span className="company-chip">{company.name}</span></div>
         <div className="user-box">
           <span className="user-email" title={user.email}>{displayName} · Admin / CEO · {user.email}</span>
           <button type="button" className="ghost" onClick={handleLogout}>Log out</button>

@@ -25,6 +25,8 @@ input, select { font: inherit; }
   background: var(--green); color: #fff; font-size: 22px; font-weight: 800; letter-spacing: 0.5px;
 }
 .logo.small { width: 36px; height: 36px; border-radius: 10px; font-size: 15px; }
+.logo-img { display: block; width: 56px; height: 56px; border-radius: 16px; object-fit: cover; }
+.logo-img.small { width: 36px; height: 36px; border-radius: 10px; }
 
 /* ---------- Auth ---------- */
 .auth-wrap {
