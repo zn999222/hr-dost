@@ -18,6 +18,17 @@ if the data is not entered yet, it says so.
 - **Leave:** requests with dates, type and Pending / Approved / Rejected status.
 - **Payroll:** monthly payroll per employee in PKR (gross = salary, net = salary;
   no tax/EOBI deduction is calculated — check before paying).
+- **Employee module (My HR):** an employee logs in with the same email HR
+  entered for them and gets a self-service portal — company policies, their
+  salary and payroll, their leaves (plus filing a new leave request, which
+  lands with HR as Pending), their attendance, and clock in / out with PKT
+  times and hours worked. Backend: `company_policies` and `clock_events`
+  tables, plus "self" RLS policies on employees / companies / attendance /
+  leave_requests / payroll_records keyed on the login's email, so an employee
+  sees only their own records and a stranger sees nothing. Employee-filed
+  leave and clock rows carry the company owner's id, so HR still sees them.
+  HR manages policies in the Policies tab (with starter templates) and sees
+  the day's clock ins/outs on the Attendance tab.
 - **AI Chat (Dost Chat):** deterministic answers computed from the live tables —
   headcount, department breakdown, salary totals / average / highest, today's
   attendance, who is on leave, pending leave, payroll for a month, and
@@ -28,11 +39,14 @@ if the data is not entered yet, it says so.
 
 ## Roles (day one)
 
-The workspace owner is the Company Admin / CEO. The approved backend plan
-expressly limits sharing: cross-user company access cannot be safely expressed
-with `owner_id` alone, so a second user cannot yet see the same company — that
-needs a future membership / role table and review before enabling. The app
-says this honestly in Settings instead of pretending multi-user roles exist.
+The workspace owner is the Company Admin / CEO. **Employees** can now log in
+with their own account (same email HR entered for them) and see only their
+own records in My HR — never another employee's, and never the company-wide
+HR views. That sharing is expressed safely through the email-keyed "self" RLS
+policies (verified: a stranger sees 0 rows, an employee sees only their own).
+A second HR officer still cannot yet see the same company — that needs a
+future membership / role table and review before enabling. The app says this
+honestly in Settings instead of pretending multi-user roles exist.
 
 ## Stack
 

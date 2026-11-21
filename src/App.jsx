@@ -3,14 +3,34 @@ import { supabase } from './supabaseClient'
 import { answerQuestion, EXAMPLE_QUESTIONS, formatDate, formatPKR } from './chat'
 
 const TODAY_PKT = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Karachi' })
+const formatTimePKT = (ts) => {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Karachi' })
+}
+const hoursWorked = (c) => {
+  if (!c?.clock_in || !c?.clock_out) return '—'
+  const h = (new Date(c.clock_out) - new Date(c.clock_in)) / 3600000
+  return h >= 0 ? h.toFixed(1) + ' hrs' : '—'
+}
 const VIEWS = [
   ['dashboard', 'Dashboard'],
   ['employees', 'Employees'],
   ['attendance', 'Attendance'],
   ['leave', 'Leave'],
   ['payroll', 'Payroll'],
+  ['myhr', 'My HR'],
+  ['policies', 'Policies'],
   ['chat', 'Dost Chat'],
   ['settings', 'Settings'],
+]
+
+// Starter policy templates (HR edits them before adding — company rules differ).
+const POLICY_STARTERS = [
+  { title: 'Working hours & attendance', category: 'Attendance', body: 'Office timing 9:00 AM – 6:00 PM (Monday to Saturday, PKT). Rozana hazri Attendance se mark hoti hai; late aane par HR ko inform karein. Clock in / out My HR se hota hai.' },
+  { title: 'Leave policy', category: 'Leave', body: 'Leave My HR se request karein; HR approve ya reject karegi. Annual, sick aur casual leave ka hisaab company ke rules ke mutabiq hota hai — approved leaves My HR mein nazar aati hain. Bina bataye chhutti unpaid count ho sakti hai.' },
+  { title: 'Salary & payday', category: 'Salary & Payroll', body: 'Salary har mahine ki 5 tareekh tak bank transfer / Easypaisa / JazzCash se pay hoti hai. Apni salary aur payslip My HR mein dekh sakte hain. Salary details confidential hain — doosre employees se share na karein.' },
 ]
 
 // ---------------- Auth ----------------
@@ -64,6 +84,7 @@ function AuthScreen() {
           <li>CEO / HR sawal poochhe English ya Roman Urdu mein — jawab live data se, table aur cards mein.</li>
           <li>HR Dost kabhi andaza nahi lagata: data nahi hai to seedha keh deta hai.</li>
           <li>Pakistani companies (10–500 employees) ke liye banaya gaya. Dates DD MMM YYYY, time PKT.</li>
+          <li>Employees ka apna My HR portal: company policies, salary, leaves aur clock in/out — apni login se, sirf apna data.</li>
         </ul>
         <p className="muted small">No spreadsheets. No filters to dig through. Data ek dafa enter karein, phir chat mein poochhein.</p>
       </div>
@@ -136,6 +157,10 @@ function App() {
   const [attendance, setAttendance] = useState([])
   const [leaveRequests, setLeaveRequests] = useState([])
   const [payroll, setPayroll] = useState([])
+  const [policies, setPolicies] = useState([])
+  const [clockEvents, setClockEvents] = useState([])
+  // employee record(s) whose email matches this login (the My HR link)
+  const [myEmployeeRows, setMyEmployeeRows] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -151,6 +176,10 @@ function App() {
   const [payMonth, setPayMonth] = useState(() => TODAY_PKT().slice(0, 7))
   // company form
   const [companyName, setCompanyName] = useState('')
+  // policy form (HR / admin)
+  const [policyForm, setPolicyForm] = useState({ title: '', category: 'General', body: '' })
+  // my leave form (employee portal)
+  const [myLeaveForm, setMyLeaveForm] = useState({ start_date: '', end_date: '', leave_type: 'Annual' })
   // chat
   const [chatInput, setChatInput] = useState('')
   const [chatLog, setChatLog] = useState([
@@ -178,17 +207,21 @@ function App() {
   const loadAll = useCallback(async (cid) => {
     if (!cid) return
     setLoading(true)
-    const [emp, att, lea, pay] = await Promise.all([
+    const [emp, att, lea, pay, clk, pol] = await Promise.all([
       supabase.from('employees').select('*').eq('company_id', cid).order('full_name'),
       supabase.from('attendance').select('*').order('work_date', { ascending: false }).limit(500),
       supabase.from('leave_requests').select('*').order('created_at', { ascending: false }).limit(500),
       supabase.from('payroll_records').select('*').order('pay_month', { ascending: false }).limit(500),
+      supabase.from('clock_events').select('*').order('work_date', { ascending: false }).limit(500),
+      supabase.from('company_policies').select('*').eq('company_id', cid).order('created_at', { ascending: true }),
     ])
     if (emp.error) setError(emp.error.message)
     setEmployees(emp.data ?? [])
     setAttendance(att.data ?? [])
     setLeaveRequests(lea.data ?? [])
     setPayroll(pay.data ?? [])
+    setClockEvents(clk.data ?? [])
+    setPolicies(pol.data ?? [])
     setLoading(false)
   }, [])
 
@@ -199,7 +232,29 @@ function App() {
 
   useEffect(() => { if (companyId) loadAll(companyId) }, [companyId, loadAll])
 
+  // My HR link: the employee record whose email matches this login.
+  // As an employee, RLS returns only that one row; as the owner, all rows
+  // are visible, so the same lookup finds the owner's own employee record.
+  useEffect(() => {
+    if (!user?.email) { setMyEmployeeRows([]); return }
+    supabase.from('employees').select('*').ilike('email', user.email).then(({ data, error: e }) => {
+      if (e) return // best-effort: a failed lookup must never break the admin flow
+      setMyEmployeeRows(data ?? [])
+    })
+  }, [user])
+
   const company = useMemo(() => companies.find((c) => c.id === companyId) ?? null, [companies, companyId])
+  const myEmployee = useMemo(() => {
+    if (!myEmployeeRows.length) return null
+    return myEmployeeRows.find((e) => e.company_id === companyId) ?? myEmployeeRows[0]
+  }, [myEmployeeRows, companyId])
+  const isOwner = !!company && !!user && company.owner_id === user.id
+  // Employee mode: signed in as an employee (not the workspace owner).
+  // They see only My HR + Policies — never the company-wide HR views.
+  const employeeMode = !!company && !isOwner && !!myEmployee
+  useEffect(() => {
+    if (employeeMode && view !== 'myhr' && view !== 'policies') setView('myhr')
+  }, [employeeMode, view])
   const activeEmps = useMemo(() => employees.filter((e) => e.is_active), [employees])
   const empById = useMemo(() => Object.fromEntries(employees.map((e) => [e.id, e])), [employees])
   const salaryTotal = useMemo(() => activeEmps.reduce((s, e) => s + (Number(e.salary_pkr) || 0), 0), [activeEmps])
@@ -210,6 +265,19 @@ function App() {
     employees.forEach((e) => { const d = e.department || 'No department'; m[d] = (m[d] || 0) + 1 })
     return Object.entries(m).sort((a, b) => b[1] - a[1])
   }, [employees])
+
+  // ---- My HR derived data (only the signed-in employee's own records) ----
+  const myPayroll = useMemo(() => (myEmployee ? payroll.filter((p) => p.employee_id === myEmployee.id) : []), [payroll, myEmployee])
+  const myLeaves = useMemo(() => (myEmployee ? leaveRequests.filter((l) => l.employee_id === myEmployee.id) : []), [leaveRequests, myEmployee])
+  const myAttendance = useMemo(() => (myEmployee ? attendance.filter((a) => a.employee_id === myEmployee.id) : []), [attendance, myEmployee])
+  const myClock = useMemo(() => (myEmployee ? clockEvents.filter((c) => c.employee_id === myEmployee.id) : []), [clockEvents, myEmployee])
+  const todayClock = useMemo(() => myClock.find((c) => c.work_date === TODAY_PKT()), [myClock])
+  const approvedLeaveDaysThisYear = useMemo(() => {
+    const year = new Date().getFullYear()
+    return myLeaves
+      .filter((l) => l.status === 'Approved' && l.start_date?.startsWith(String(year)))
+      .reduce((s, l) => s + Math.max(1, Math.round((new Date(l.end_date) - new Date(l.start_date)) / 86400000) + 1), 0)
+  }, [myLeaves])
 
   function flash(msg) { setNotice(msg); setTimeout(() => setNotice(''), 4000) }
 
@@ -328,6 +396,83 @@ function App() {
     setPayroll((p) => p.filter((r) => r.id !== id))
   }
 
+  // ---- My HR: clock in / out (employee's own row, today PKT) ----
+  async function handleClockIn() {
+    if (!myEmployee) return
+    setError('')
+    const today = TODAY_PKT()
+    const nowIso = new Date().toISOString()
+    if (todayClock?.clock_in) { flash('Aaj aap pehle se clocked in hain — ' + formatTimePKT(todayClock.clock_in) + ' (PKT).'); return }
+    if (todayClock) {
+      const { data, error: err } = await supabase.from('clock_events').update({ clock_in: nowIso }).eq('id', todayClock.id).select('*').single()
+      if (err) { setError(err.message); return }
+      setClockEvents((p) => p.map((c) => (c.id === data.id ? data : c)))
+    } else {
+      // owner_id = company owner so HR/Admin sees this row too (RLS requires it).
+      const { data, error: err } = await supabase.from('clock_events').insert({
+        employee_id: myEmployee.id, work_date: today, clock_in: nowIso, owner_id: myEmployee.owner_id,
+      }).select('*').single()
+      if (err) { setError(err.message); return }
+      setClockEvents((p) => [data, ...p])
+    }
+    flash(`Clocked in at ${formatTimePKT(nowIso)} (PKT) — have a good day!`)
+  }
+
+  async function handleClockOut() {
+    if (!myEmployee) return
+    setError('')
+    if (!todayClock?.clock_in) { setError('Pehle clock in karein — aaj ka clock in abhi nahi hua.'); return }
+    if (todayClock.clock_out) { flash('Aaj aap pehle se clocked out hain — ' + formatTimePKT(todayClock.clock_out) + ' (PKT).'); return }
+    const nowIso = new Date().toISOString()
+    const { data, error: err } = await supabase.from('clock_events').update({ clock_out: nowIso }).eq('id', todayClock.id).select('*').single()
+    if (err) { setError(err.message); return }
+    setClockEvents((p) => p.map((c) => (c.id === data.id ? data : c)))
+    flash(`Clocked out at ${formatTimePKT(nowIso)} (PKT). Aaj kaam: ${hoursWorked(data)}.`)
+  }
+
+  // ---- My HR: employee files their own leave (goes to HR as Pending) ----
+  async function handleMyLeave(e) {
+    e.preventDefault()
+    if (!myEmployee || !myLeaveForm.start_date || !myLeaveForm.end_date) return
+    setError('')
+    const { data, error: err } = await supabase.from('leave_requests').insert({
+      employee_id: myEmployee.id,
+      start_date: myLeaveForm.start_date,
+      end_date: myLeaveForm.end_date,
+      leave_type: myLeaveForm.leave_type,
+      status: 'Pending',
+      owner_id: myEmployee.owner_id,
+    }).select('*').single()
+    if (err) { setError(err.message); return }
+    setLeaveRequests((p) => [data, ...p])
+    setMyLeaveForm({ start_date: '', end_date: '', leave_type: 'Annual' })
+    flash('Leave request HR ko bhej di gayi (Pending).')
+  }
+
+  // ---- Policies: HR / admin manages them ----
+  async function handleAddPolicy(e) {
+    e.preventDefault()
+    if (!policyForm.title.trim() || !policyForm.body.trim() || !user || !companyId) return
+    setError('')
+    const { data, error: err } = await supabase.from('company_policies').insert({
+      title: policyForm.title.trim(),
+      category: policyForm.category,
+      body: policyForm.body.trim(),
+      owner_id: user.id,
+      company_id: companyId,
+    }).select('*').single()
+    if (err) { setError(err.message); return }
+    setPolicies((p) => [...p, data])
+    setPolicyForm({ title: '', category: 'General', body: '' })
+    flash(`Policy "${data.title}" add ho gayi — employees ise My HR mein parh sakte hain.`)
+  }
+
+  async function handleDeletePolicy(id) {
+    const { error: err } = await supabase.from('company_policies').delete().eq('id', id)
+    if (err) { setError(err.message); return }
+    setPolicies((p) => p.filter((x) => x.id !== id))
+  }
+
   function handleAsk(text) {
     const q = (text ?? chatInput).trim()
     if (!q) return
@@ -356,6 +501,7 @@ function App() {
           <div className="setup-card">
             <h2>Apni company ka workspace banayein</h2>
             <p className="muted">Aap Company Admin / CEO hain. Company ka naam likhein — is ke baad employees, attendance, leave aur payroll isi workspace mein manage honge.</p>
+            <p className="muted">Employee hain? Workspace na banayein — HR se kahain ke aap ko Employees mein aap ki isi login email se add karein; us ke baad My HR khul jayega.</p>
             {error && <p className="error">{error}</p>}
             <form onSubmit={handleCreateCompany} className="inline-form">
               <input type="text" value={companyName} onChange={(e) => setCompanyName(e.target.value)} placeholder="Company name — jaise Apna Furniture (Pvt) Ltd" aria-label="Company name" maxLength={120} />
@@ -370,13 +516,15 @@ function App() {
 
   const monthPayroll = payroll.filter((p) => p.pay_month?.startsWith(payMonth))
   const monthTotal = monthPayroll.reduce((s, p) => s + (Number(p.net_salary) || 0), 0)
+  const roleLabel = isOwner ? 'Admin / CEO' : myEmployee ? 'Employee' : 'Workspace member'
+  const visibleViews = employeeMode ? VIEWS.filter(([k]) => k === 'myhr' || k === 'policies') : VIEWS
 
   return (
     <div className="app">
       <header className="topbar">
         <div className="brand"><img className="logo-img small" src="/hr-dost-icon.png" alt="HR Dost logo" /><span className="brand-name">HR Dost</span><span className="company-chip">{company.name}</span></div>
         <div className="user-box">
-          <span className="user-email" title={user.email}>{displayName} · Admin / CEO · {user.email}</span>
+          <span className="user-email" title={user.email}>{displayName} · {roleLabel} · {user.email}</span>
           <button type="button" className="ghost" onClick={handleLogout}>Log out</button>
         </div>
       </header>
@@ -385,7 +533,7 @@ function App() {
       {notice && <p className="info banner" role="status">{notice}</p>}
 
       <nav className="nav" aria-label="Sections">
-        {VIEWS.map(([key, label]) => (
+        {visibleViews.map(([key, label]) => (
           <button key={key} type="button" className={view === key ? 'active' : ''} onClick={() => setView(key)}>{label}</button>
         ))}
       </nav>
@@ -431,6 +579,7 @@ function App() {
           <section>
             <h2>Employees — {employees.length}</h2>
             <p className="muted">HR data ek dafa yahan enter karein; Dost Chat isi se jawab de ga. Salary PKR mein.</p>
+            <p className="muted">Employee login: employee apni isi email se sign up / log in karein jo yahan enter hai — phir My HR mein sirf apna data (policies, salary, leaves, clock in/out) dekh sakte hain, doosre employees ka nahi.</p>
             <form onSubmit={handleAddEmployee} className="form-grid card">
               <label>Full name *<input type="text" required value={empForm.full_name} onChange={(e) => setEmpForm({ ...empForm, full_name: e.target.value })} placeholder="Jaise Ahmed Khan" maxLength={120} /></label>
               <label>Email<input type="email" value={empForm.email} onChange={(e) => setEmpForm({ ...empForm, email: e.target.value })} placeholder="ahmed@company.pk" /></label>
@@ -496,6 +645,15 @@ function App() {
                 headers={['Employee', 'Date', 'Status']}
                 rows={attendance.slice(0, 30).map((a) => [empById[a.employee_id]?.full_name || '—', formatDate(a.work_date), a.status])}
                 emptyText="Abhi koi attendance record nahi hai."
+              />
+            </div>
+            <div className="card">
+              <h3>Clock ins / outs — {formatDate(attDate)}</h3>
+              <p className="muted">Employees My HR se clock in/out karte hain; times PKT mein hain.</p>
+              <DataTable
+                headers={['Employee', 'Clock in', 'Clock out', 'Hours']}
+                rows={clockEvents.filter((c) => c.work_date === attDate).map((c) => [empById[c.employee_id]?.full_name || '—', formatTimePKT(c.clock_in), formatTimePKT(c.clock_out), hoursWorked(c)])}
+                emptyText="Is date par koi clock in/out nahi hai."
               />
             </div>
           </section>
@@ -567,6 +725,146 @@ function App() {
           </section>
         )}
 
+        {view === 'myhr' && (
+          <section>
+            <h2>My HR — {myEmployee ? myEmployee.full_name : 'Employee portal'}</h2>
+            {!myEmployee ? (
+              <div className="card">
+                <h3>Employee record nahi mila</h3>
+                <p className="muted">Aap <strong>{user.email}</strong> se logged in hain, lekin is company mein is email ka koi employee record nahi hai.</p>
+                <p className="muted">HR se kahain ke aap ko Employees tab mein isi email se add karein — us ke baad My HR mein aap apni company policies, salary, leaves aur clock ins/outs dekh sakenge.</p>
+                {isOwner && <p className="muted">Aap is workspace ke owner hain. Khud ko employee ke tor par dekhne ke liye Employees tab mein apni email se apna record add karein.</p>}
+              </div>
+            ) : (
+              <>
+                <p className="muted">{company.name} · {myEmployee.department || 'No department'} · {myEmployee.job_title || 'No job title'} · Joined {formatDate(myEmployee.hire_date)} · {myEmployee.is_active ? 'Active' : 'Inactive'} · {myEmployee.email || user.email}</p>
+                <div className="stats">
+                  <Stat label="My monthly salary" value={formatPKR(myEmployee.salary_pkr)} sub="As entered by HR" />
+                  <Stat label="Approved leave days" value={approvedLeaveDaysThisYear} sub={`This year (${new Date().getFullYear()})`} />
+                  <Stat label="My leave requests" value={myLeaves.length} sub={`${myLeaves.filter((l) => l.status === 'Pending').length} pending`} />
+                  <Stat label="Today — clock in" value={todayClock?.clock_in ? formatTimePKT(todayClock.clock_in) : 'Not yet'} sub={todayClock?.clock_out ? `Out: ${formatTimePKT(todayClock.clock_out)} · ${hoursWorked(todayClock)}` : todayClock?.clock_in ? 'Clocked in — abhi working' : formatDate(TODAY_PKT()) + ' (PKT)'} />
+                </div>
+
+                <div className="card">
+                  <h3>Clock in / out — aaj {formatDate(TODAY_PKT())}</h3>
+                  <p className="muted">Times PKT mein save hoti hain. HR aap ke clock ins Attendance tab mein dekh sakti hai.</p>
+                  <div className="inline-row">
+                    <button type="button" className="primary" onClick={handleClockIn} disabled={!!todayClock?.clock_in}>Clock in</button>
+                    <button type="button" className="primary" onClick={handleClockOut} disabled={!todayClock?.clock_in || !!todayClock?.clock_out}>Clock out</button>
+                    <span className="muted">In: <strong>{formatTimePKT(todayClock?.clock_in)}</strong> · Out: <strong>{formatTimePKT(todayClock?.clock_out)}</strong> · Hours: <strong>{hoursWorked(todayClock)}</strong></span>
+                  </div>
+                </div>
+
+                <div className="two-col">
+                  <div className="card">
+                    <h3>My salary &amp; payroll</h3>
+                    <p className="muted">Monthly salary: <strong>{formatPKR(myEmployee.salary_pkr)}</strong> (HR ne enter ki hai). Neeche aap ki generated payroll hai — gross = net = salary; koi tax/EOBI deduction calculate nahi hui.</p>
+                    <DataTable
+                      headers={['Pay month', 'Gross (PKR)', 'Net (PKR)']}
+                      rows={myPayroll.map((p) => [formatDate(p.pay_month), formatPKR(p.gross_salary), formatPKR(p.net_salary)])}
+                      emptyText="Abhi aap ki koi payroll generate nahi hui — HR Payroll tab se generate karegi."
+                    />
+                  </div>
+                  <div className="card">
+                    <h3>My attendance</h3>
+                    <DataTable
+                      headers={['Date', 'Status']}
+                      rows={myAttendance.slice(0, 14).map((a) => [formatDate(a.work_date), a.status])}
+                      emptyText="Abhi aap ki koi attendance record nahi hai."
+                    />
+                    <h3 style={{ marginTop: 20 }}>My clock history</h3>
+                    <DataTable
+                      headers={['Date', 'Clock in', 'Clock out', 'Hours']}
+                      rows={myClock.slice(0, 14).map((c) => [formatDate(c.work_date), formatTimePKT(c.clock_in), formatTimePKT(c.clock_out), hoursWorked(c)])}
+                      emptyText="Abhi koi clock in/out nahi hai — upar Clock in dabayein."
+                    />
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3>My leaves — request karein</h3>
+                  <form onSubmit={handleMyLeave} className="form-grid">
+                    <label>Leave type
+                      <select value={myLeaveForm.leave_type} onChange={(e) => setMyLeaveForm({ ...myLeaveForm, leave_type: e.target.value })}>
+                        <option>Annual</option><option>Sick</option><option>Casual</option><option>Unpaid</option>
+                      </select>
+                    </label>
+                    <label>Start date *<input type="date" required value={myLeaveForm.start_date} onChange={(e) => setMyLeaveForm({ ...myLeaveForm, start_date: e.target.value })} /></label>
+                    <label>End date *<input type="date" required value={myLeaveForm.end_date} onChange={(e) => setMyLeaveForm({ ...myLeaveForm, end_date: e.target.value })} /></label>
+                    <button type="submit" className="primary" disabled={!myLeaveForm.start_date || !myLeaveForm.end_date}>Submit leave request</button>
+                  </form>
+                  <div style={{ marginTop: 16 }}>
+                    <DataTable
+                      headers={['Type', 'From', 'To', 'Status']}
+                      rows={myLeaves.map((l) => [l.leave_type || '—', formatDate(l.start_date), formatDate(l.end_date), l.status])}
+                      emptyText="Abhi aap ki koi leave request nahi hai."
+                    />
+                  </div>
+                </div>
+
+                <div className="card">
+                  <h3>Company policies</h3>
+                  {policies.length === 0 ? (
+                    <p className="muted empty">HR ne abhi koi policy publish nahi ki — Policies tab mein HR policies add karegi to yahan nazar aayengi.</p>
+                  ) : (
+                    policies.map((p) => (
+                      <div key={p.id} style={{ borderTop: '1px solid var(--line)', paddingTop: 12, marginTop: 12 }}>
+                        <strong>{p.title}</strong> <span className="company-chip">{p.category || 'General'}</span>
+                        <p className="policy-body">{p.body}</p>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+          </section>
+        )}
+
+        {view === 'policies' && (
+          <section>
+            <h2>Company policies — {company.name}</h2>
+            {isOwner ? (
+              <>
+                <p className="muted">HR yahan policies likhti hai; employees inhein My HR mein parhte hain. Sirf aap (workspace owner) policies add ya delete kar sakte hain.</p>
+                <form onSubmit={handleAddPolicy} className="form-grid card">
+                  <label>Title *<input type="text" required value={policyForm.title} onChange={(e) => setPolicyForm({ ...policyForm, title: e.target.value })} placeholder="Jaise Leave policy" maxLength={120} /></label>
+                  <label>Category
+                    <select value={policyForm.category} onChange={(e) => setPolicyForm({ ...policyForm, category: e.target.value })}>
+                      <option>General</option><option>Attendance</option><option>Leave</option><option>Salary &amp; Payroll</option><option>Conduct</option><option>IT &amp; Data</option><option>Health &amp; Safety</option>
+                    </select>
+                  </label>
+                  <label>Policy text *
+                    <textarea required value={policyForm.body} onChange={(e) => setPolicyForm({ ...policyForm, body: e.target.value })} placeholder="Policy ki tafseel yahan likhein…" maxLength={4000} />
+                  </label>
+                  <button type="submit" className="primary" disabled={!policyForm.title.trim() || !policyForm.body.trim()}>Add policy</button>
+                </form>
+                <div className="card">
+                  <h3>Starter templates</h3>
+                  <p className="muted">Template dabayein — form bhar jayega; apni company ke rules ke mutabiq edit kar ke Add policy dabayein.</p>
+                  <div className="examples">
+                    {POLICY_STARTERS.map((t) => (
+                      <button key={t.title} type="button" className="chip" onClick={() => setPolicyForm(t)}>{t.title}</button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            ) : (
+              <p className="muted">Neeche aap ki company ki policies hain — HR inhein update karti hai. Aap inhein sirf parh sakte hain.</p>
+            )}
+            {policies.length === 0 ? (
+              <p className="muted empty">Abhi koi policy publish nahi hui.</p>
+            ) : (
+              policies.map((p) => (
+                <div key={p.id} className="card">
+                  <strong>{p.title}</strong> <span className="company-chip">{p.category || 'General'}</span>
+                  <p className="policy-body">{p.body}</p>
+                  {isOwner && <button type="button" className="ghost small-btn danger" onClick={() => handleDeletePolicy(p.id)}>Delete policy</button>}
+                </div>
+              ))
+            )}
+          </section>
+        )}
+
         {view === 'chat' && (
           <section>
             <h2>Dost Chat — Sawal poochho, jawab pao</h2>
@@ -615,7 +913,8 @@ function App() {
             </div>
             <div className="card">
               <h3>Roles — honest note</h3>
-              <p className="muted">Day one mein aap hi Company Admin / CEO hain. Doosra user (jaise alag HR officer) abhi isi company ko nahi dekh sakta — approved backend plan ke mutabiq, cross-user company access ke liye pehle ek membership / role table aur review chahiye. Jab tak woh nahi banta, HR Dost kisi aur ko aap ka data dikhane ka daawa nahi karta.</p>
+              <p className="muted">Aap Company Admin / CEO (workspace owner) hain. <strong>Employees</strong> apni isi email se log in kar ke My HR khol sakte hain — wahan unhein sirf apna data nazar aata hai (apni salary, apni leaves, apni attendance aur clock ins/outs, aur company policies); doosre employees ka kuch nahi. Employee ki leave request aur clock in/out aap ko bhi nazar aate hain.</p>
+              <p className="muted">Doosra user (jaise alag HR officer) abhi isi company ko nahi dekh sakta — cross-user company access ke liye pehle ek membership / role table aur review chahiye. Jab tak woh nahi banta, HR Dost kisi aur ko aap ka data dikhane ka daawa nahi karta.</p>
             </div>
             <div className="card">
               <h3>Data &amp; privacy</h3>
